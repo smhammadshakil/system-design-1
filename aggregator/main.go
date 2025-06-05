@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -19,6 +20,22 @@ import (
 type Response struct {
 	Endpoint string `json:"endpoint"`
 	Value    int    `json:"value"`
+}
+
+func discoverNodes() []string {
+	// Get number of nodes from environment variable, default to 3
+	numNodes := 3
+	if numStr := os.Getenv("NUM_NODES"); numStr != "" {
+		if n, err := strconv.Atoi(numStr); err == nil {
+			numNodes = n
+		}
+	}
+
+	var endpoints []string
+	for i := 1; i <= numNodes; i++ {
+		endpoints = append(endpoints, fmt.Sprintf("http://node%d:8080/status", i))
+	}
+	return endpoints
 }
 
 func fetchEndpoint(url string, wg *sync.WaitGroup, results chan<- Response) {
@@ -47,10 +64,10 @@ func fetchEndpoint(url string, wg *sync.WaitGroup, results chan<- Response) {
 }
 
 func fetchAllEndpoints() []Response {
-	endpoints := []string{
-		"http://node1:8080/status",
-		"http://node2:8080/status",
-		"http://node3:8080/status",
+	// Discover nodes
+	endpoints := discoverNodes()
+	if len(endpoints) == 0 {
+		log.Fatal("No nodes discovered on the network")
 	}
 
 	var wg sync.WaitGroup

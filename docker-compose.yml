@@ -1,11 +1,10 @@
-
-
 services:
   aggregator:
     build: ./aggregator
     container_name: aggregator
     environment:
       - PORT=8080
+      - NUM_NODES=3
     ports:
       - "8001:8080"
     networks:
@@ -23,6 +22,7 @@ services:
       - PORT=8080
     networks:
       - app-network
+
   node2:
     build: ./performance-status
     container_name: node2
@@ -30,6 +30,7 @@ services:
       - PORT=8080
     networks:
       - app-network
+
   node3:
     build: ./performance-status
     container_name: node3
@@ -40,6 +41,7 @@ services:
 
   redis:
     image: redis:latest
+    container_name: redis
     ports:
       - "6379:6379"
     volumes:
