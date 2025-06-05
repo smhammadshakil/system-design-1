@@ -1,0 +1,76 @@
+
+
+services:
+  aggregator:
+    build: ./aggregator
+    container_name: aggregator
+    environment:
+      - PORT=8080
+    ports:
+      - "8001:8080"
+    networks:
+      - app-network
+    depends_on:
+      - rabbitmq
+      - node1
+      - node2
+      - node3
+
+  node1:
+    build: ./performance-status
+    container_name: node1
+    environment:
+      - PORT=8080
+    networks:
+      - app-network
+  node2:
+    build: ./performance-status
+    container_name: node2
+    environment:
+      - PORT=8080
+    networks:
+      - app-network
+  node3:
+    build: ./performance-status
+    container_name: node3
+    environment:
+      - PORT=8080
+    networks:
+      - app-network
+
+  redis:
+    image: redis:latest
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - app-network
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    networks:
+      - app-network
+
+  consumer:
+    build: ./consumer
+    container_name: consumer
+    environment:
+      - PORT=8080
+    networks:
+      - app-network
+    depends_on:
+      - redis
+      - rabbitmq
+      - aggregator
+
+volumes:
+  redis_data:
+
+networks:
+  app-network:
+    driver: bridge
