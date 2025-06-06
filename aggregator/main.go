@@ -1,14 +1,17 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -22,19 +25,66 @@ type Response struct {
 	Value    int    `json:"value"`
 }
 
+func getOwnSubnet() (string, error) {
+	// Get container's IP address
+	cmd := exec.Command("hostname", "-i")
+	output, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("error getting IP address: %v", err)
+	}
+
+	// Get the first IP address (in case there are multiple)
+	ips := strings.Fields(string(output))
+	if len(ips) == 0 {
+		return "", fmt.Errorf("no IP address found")
+	}
+
+	// Extract the first three octets to form the subnet
+	ipParts := strings.Split(ips[0], ".")
+	if len(ipParts) != 4 {
+		return "", fmt.Errorf("invalid IP address format")
+	}
+
+	// Create subnet in CIDR notation (e.g., 172.20.0.0/16)
+	subnet := fmt.Sprintf("%s.%s.0.0/24", ipParts[0], ipParts[1])
+	return subnet, nil
+}
+
 func discoverNodes() []string {
-	// Get number of nodes from environment variable, default to 3
-	numNodes := 3
-	if numStr := os.Getenv("NUM_NODES"); numStr != "" {
-		if n, err := strconv.Atoi(numStr); err == nil {
-			numNodes = n
+	// Get the subnet based on container's own IP
+	subnet, err := getOwnSubnet()
+	if err != nil {
+		fmt.Printf("Error getting subnet: %v\n", err)
+		return nil
+	}
+
+	// Use nmap to find nodes on the network
+	fmt.Printf("- - Finding Nodes on subnet %s - -\n", subnet)
+	cmd := exec.Command("nmap", "-sn", "-n", subnet)
+	output, err := cmd.Output()
+	if err != nil {
+		fmt.Printf("Error running nmap: %v\n", err)
+		return nil
+	}
+	fmt.Printf("- - Nodes Found - -\n")
+	var endpoints []string
+	scanner := bufio.NewScanner(bytes.NewReader(output))
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "Nmap scan report for") {
+			fields := strings.Fields(line)
+			if len(fields) >= 5 {
+				endpoints = append(endpoints, fmt.Sprintf("http://%s:8080/status", fields[4]))
+			}
 		}
 	}
 
-	var endpoints []string
-	for i := 1; i <= numNodes; i++ {
-		endpoints = append(endpoints, fmt.Sprintf("http://node%d:8080/status", i))
+	if len(endpoints) == 0 {
+		fmt.Println("No nodes found on the network")
+		return nil
 	}
+
+	fmt.Printf("Discovered %d nodes: %v\n", len(endpoints), endpoints)
 	return endpoints
 }
 
@@ -63,11 +113,9 @@ func fetchEndpoint(url string, wg *sync.WaitGroup, results chan<- Response) {
 	results <- Response{Endpoint: url, Value: num}
 }
 
-func fetchAllEndpoints() []Response {
-	// Discover nodes
-	endpoints := discoverNodes()
+func fetchAllEndpoints(endpoints []string) []Response {
 	if len(endpoints) == 0 {
-		log.Fatal("No nodes discovered on the network")
+		fmt.Println("No nodes discovered on the network")
 	}
 
 	var wg sync.WaitGroup
@@ -92,32 +140,56 @@ func fetchAllEndpoints() []Response {
 	return responses
 }
 
-func publishToRabbitMQ(messages []Response) {
-	conn, err := amqp.Dial("amqp://guest:guest@rabbitmq:5672/")
+func createQueue() (*amqp.Connection, *amqp.Channel) {
+	var conn *amqp.Connection
+	var ch *amqp.Channel
+	var err error
+
+	// Retry connection with backoff
+	maxRetries := 30
+	retryInterval := 2 * time.Second
+
+	for i := 0; i < maxRetries; i++ {
+		fmt.Printf("Attempting to connect to RabbitMQ (attempt %d/%d)...\n", i+1, maxRetries)
+		conn, err = amqp.Dial("amqp://guest:guest@rabbitmq:5672/")
+		if err == nil {
+			fmt.Println("Successfully connected to RabbitMQ")
+			break
+		}
+		fmt.Printf("Failed to connect to RabbitMQ: %v. Retrying in %v...\n", err, retryInterval)
+		time.Sleep(retryInterval)
+	}
+
 	if err != nil {
-		fmt.Println("Error connecting to RabbitMQ", err)
+		fmt.Println("Failed to connect to RabbitMQ after all retries")
 		panic(err)
 	}
-	defer conn.Close()
-	fmt.Println("Connected to RabbitMQ")
 
-	ch, err := conn.Channel()
+	// Create channel
+	ch, err = conn.Channel()
 	if err != nil {
 		fmt.Println("Error opening channel", err)
 		panic(err)
 	}
-	defer ch.Close()
 
-	ch.QueueDeclare(
+	// Declare queue
+	_, err = ch.QueueDeclare(
 		"performance_status", // name
-		false,                // durable
+		true,                 // durable
 		false,                // delete when unused
 		false,                // exclusive
 		false,                // no-wait
 		nil,                  // arguments
 	)
-	fmt.Println("Queue declared")
+	if err != nil {
+		fmt.Println("Error declaring queue", err)
+		panic(err)
+	}
+	fmt.Println("Queue 'performance_status' declared successfully")
+	return conn, ch
+}
 
+func publishToRabbitMQ(ch *amqp.Channel, messages []Response) {
 	jsonData, err := json.Marshal(messages)
 	if err != nil {
 		fmt.Println("Error marshaling messages", err)
@@ -141,13 +213,18 @@ func main() {
 	server_port := os.Getenv("PORT")
 	r := gin.Default()
 
+	// Discover nodes
+	endpoints := discoverNodes()
+	conn, ch := createQueue()
+	defer conn.Close()
+	defer ch.Close()
 	r.GET("/aggregate", func(c *gin.Context) {
-		responses := fetchAllEndpoints()
+		responses := fetchAllEndpoints(endpoints)
 		if len(responses) == 0 {
 			c.JSON(500, gin.H{"error": "No valid responses received"})
 			return
 		}
-		publishToRabbitMQ(responses)
+		publishToRabbitMQ(ch, responses)
 		c.JSON(200, responses)
 	})
 
@@ -158,14 +235,14 @@ func main() {
 	// Create a done channel to stop the ticker
 	done := make(chan bool)
 
-	ticker := time.NewTicker(10 * time.Second)
+	ticker := time.NewTicker(5 * time.Second)
 	go func() {
 		for {
 			select {
 			case <-ticker.C:
-				responses := fetchAllEndpoints()
+				responses := fetchAllEndpoints(endpoints)
 				if len(responses) > 0 {
-					publishToRabbitMQ(responses)
+					publishToRabbitMQ(ch, responses)
 				}
 			case <-done:
 				ticker.Stop()

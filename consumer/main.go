@@ -33,30 +33,50 @@ func NewConsumer() (*Consumer, error) {
 		DB:       0,
 	})
 
-	conn, err := amqp.Dial("amqp://guest:guest@rabbitmq:5672/")
+	// Connect to RabbitMQ
+	var conn *amqp.Connection
+	var err error
+
+	// Retry connection with backoff
+	maxRetries := 30
+	retryInterval := 2 * time.Second
+
+	for i := 0; i < maxRetries; i++ {
+		fmt.Printf("Attempting to connect to RabbitMQ (attempt %d/%d)...\n", i+1, maxRetries)
+		conn, err = amqp.Dial("amqp://guest:guest@rabbitmq:5672/")
+		if err == nil {
+			fmt.Println("Successfully connected to RabbitMQ")
+			break
+		}
+		fmt.Printf("Failed to connect to RabbitMQ: %v. Retrying in %v...\n", err, retryInterval)
+		time.Sleep(retryInterval)
+	}
+
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to RabbitMQ: %v", err)
+		fmt.Println("Failed to connect to RabbitMQ after all retries")
+		panic(err)
 	}
 
 	ch, err := conn.Channel()
 	if err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("failed to open a channel: %v", err)
+		fmt.Println("Error opening channel", err)
+		panic(err)
 	}
 
+	// Declare queue
 	q, err := ch.QueueDeclare(
 		"performance_status", // name
-		false,                // durable
+		true,                 // durable
 		false,                // delete when unused
 		false,                // exclusive
 		false,                // no-wait
 		nil,                  // arguments
 	)
 	if err != nil {
-		ch.Close()
-		conn.Close()
-		return nil, fmt.Errorf("failed to declare a queue: %v", err)
+		fmt.Println("Error declaring queue", err)
+		panic(err)
 	}
+	fmt.Println("Queue 'performance_status' declared successfully")
 
 	return &Consumer{
 		redisClient: rdb,
@@ -87,6 +107,8 @@ func (c *Consumer) storeInRedis(ctx context.Context, responses []Response) {
 		fmt.Printf("- - Data key: %v\n", resp.Endpoint)
 		fmt.Printf("- - Data val: %v\n", resp.Value)
 
+		fmt.Println("Sleeping for 15 seconds...")
+		time.Sleep(15 * time.Second)
 		if err := c.redisClient.Set(ctx, key, value, 24*time.Hour).Err(); err != nil {
 			fmt.Printf("Error storing in Redis: %v\n", err)
 		} else {
@@ -96,10 +118,30 @@ func (c *Consumer) storeInRedis(ctx context.Context, responses []Response) {
 }
 
 func (c *Consumer) Start() error {
+	// Ensure channel is open
+	if c.channel == nil {
+		ch, err := c.rabbitConn.Channel()
+		if err != nil {
+			return fmt.Errorf("failed to open channel: %v", err)
+		}
+		c.channel = ch
+	}
+
+	// Set QoS to prefetch 1 message at a time
+	err := c.channel.Qos(
+		1,     // prefetch count
+		0,     // prefetch size
+		false, // global
+	)
+	if err != nil {
+		return fmt.Errorf("failed to set QoS: %v", err)
+	}
+	fmt.Println("QoS settings applied: prefetch count = 1")
+
 	msgs, err := c.channel.Consume(
 		c.queue.Name, // queue
 		"",           // consumer
-		true,         // auto-ack
+		false,        // auto-ack (changed to false for manual ack)
 		false,        // exclusive
 		false,        // no-local
 		false,        // no-wait
@@ -109,22 +151,129 @@ func (c *Consumer) Start() error {
 		return fmt.Errorf("failed to register a consumer: %v", err)
 	}
 
+	// Start connection monitoring
+	go c.monitorConnection()
+
 	go func() {
 		for {
 			select {
-			case msg := <-msgs:
+			case msg, ok := <-msgs:
+				if !ok {
+					fmt.Println("Message channel closed, attempting to reconnect...")
+					// Attempt to reconnect
+					if err := c.reconnect(); err != nil {
+						fmt.Printf("Failed to reconnect: %v\n", err)
+						return
+					}
+					// Restart the consumer
+					if err := c.Start(); err != nil {
+						fmt.Printf("Failed to restart consumer: %v\n", err)
+						return
+					}
+					return
+				}
+
 				var responses []Response
 				if err := json.Unmarshal(msg.Body, &responses); err != nil {
 					fmt.Printf("Error unmarshaling message: %v\n", err)
+					msg.Ack(false) // Acknowledge the message even if it's invalid
 					continue
 				}
+
+				fmt.Printf("Processing message with %d responses...\n", len(responses))
 				c.storeInRedis(context.Background(), responses)
+				fmt.Println("Message processing completed, acknowledging...")
+				msg.Ack(false) // Manually acknowledge the message after processing
 
 			case <-c.done:
 				return
 			}
 		}
 	}()
+
+	return nil
+}
+
+func (c *Consumer) monitorConnection() {
+	notifyClose := c.rabbitConn.NotifyClose(make(chan *amqp.Error))
+	for {
+		select {
+		case err := <-notifyClose:
+			if err != nil {
+				fmt.Printf("Connection closed: %v\n", err)
+				// Attempt to reconnect
+				if err := c.reconnect(); err != nil {
+					fmt.Printf("Failed to reconnect: %v\n", err)
+					return
+				}
+				// Restart the consumer
+				if err := c.Start(); err != nil {
+					fmt.Printf("Failed to restart consumer: %v\n", err)
+					return
+				}
+			}
+		case <-c.done:
+			return
+		}
+	}
+}
+
+func (c *Consumer) reconnect() error {
+	// Close existing channel if it exists
+	if c.channel != nil {
+		c.channel.Close()
+	}
+
+	// Close existing connection if it exists
+	if c.rabbitConn != nil {
+		c.rabbitConn.Close()
+	}
+
+	// Retry connection with backoff
+	maxRetries := 30
+	retryInterval := 2 * time.Second
+
+	var conn *amqp.Connection
+	var err error
+
+	for i := 0; i < maxRetries; i++ {
+		fmt.Printf("Attempting to reconnect to RabbitMQ (attempt %d/%d)...\n", i+1, maxRetries)
+		conn, err = amqp.Dial("amqp://guest:guest@rabbitmq:5672/")
+		if err == nil {
+			fmt.Println("Successfully reconnected to RabbitMQ")
+			break
+		}
+		fmt.Printf("Failed to reconnect to RabbitMQ: %v. Retrying in %v...\n", err, retryInterval)
+		time.Sleep(retryInterval)
+	}
+
+	if err != nil {
+		return fmt.Errorf("failed to reconnect after all retries: %v", err)
+	}
+
+	ch, err := conn.Channel()
+	if err != nil {
+		conn.Close()
+		return fmt.Errorf("failed to open channel: %v", err)
+	}
+
+	// Update consumer's connection and channel
+	c.rabbitConn = conn
+	c.channel = ch
+
+	// Re-declare queue
+	q, err := ch.QueueDeclare(
+		"performance_status", // name
+		true,                 // durable
+		false,                // delete when unused
+		false,                // exclusive
+		false,                // no-wait
+		nil,                  // arguments
+	)
+	if err != nil {
+		return fmt.Errorf("failed to declare queue: %v", err)
+	}
+	c.queue = q
 
 	return nil
 }
@@ -144,7 +293,6 @@ func main() {
 		os.Exit(1)
 	}
 	defer consumer.Close()
-
 	if err := consumer.Start(); err != nil {
 		fmt.Printf("Error starting consumer: %v\n", err)
 		os.Exit(1)
