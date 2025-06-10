@@ -108,7 +108,7 @@ func (c *Consumer) storeInRedis(ctx context.Context, responses []Response) {
 		fmt.Printf("- - Data val: %v\n", resp.Value)
 
 		fmt.Println("Sleeping for 15 seconds...")
-		time.Sleep(15 * time.Second)
+		time.Sleep(5 * time.Second)
 		if err := c.redisClient.Set(ctx, key, value, 24*time.Hour).Err(); err != nil {
 			fmt.Printf("Error storing in Redis: %v\n", err)
 		} else {
@@ -283,8 +283,8 @@ func (c *Consumer) Stop() {
 }
 
 func main() {
-	fmt.Println("Waiting 10 seconds before starting the consumer...")
-	time.Sleep(10 * time.Second)
+	// fmt.Println("Waiting 10 seconds before starting the consumer...")
+	// time.Sleep(10 * time.Second)
 	fmt.Println("Starting consumer...")
 
 	consumer, err := NewConsumer()

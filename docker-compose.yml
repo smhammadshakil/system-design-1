@@ -39,6 +39,54 @@ services:
     networks:
       - app-network
 
+  consumer1:
+    build: ./consumer
+    container_name: consumer1
+    environment:
+      - PORT=8081
+    networks:
+      - app-network
+    depends_on:
+      - redis
+      - rabbitmq
+      - aggregator
+
+  consumer2:
+    build: ./consumer
+    container_name: consumer2
+    environment:
+      - PORT=8082
+    networks:
+      - app-network
+    depends_on:
+      - redis
+      - rabbitmq
+      - aggregator
+
+  consumer3:
+    build: ./consumer
+    container_name: consumer3
+    environment:
+      - PORT=8083
+    networks:
+      - app-network
+    depends_on:
+      - redis
+      - rabbitmq
+      - aggregator
+
+  consumer4:
+    build: ./consumer
+    container_name: consumer4
+    environment:
+      - PORT=8084
+    networks:
+      - app-network
+    depends_on:
+      - redis
+      - rabbitmq
+      - aggregator
+
   redis:
     image: redis:latest
     container_name: redis
@@ -57,18 +105,6 @@ services:
       - "15672:15672"
     networks:
       - app-network
-
-  consumer:
-    build: ./consumer
-    container_name: consumer
-    environment:
-      - PORT=8080
-    networks:
-      - app-network
-    depends_on:
-      - redis
-      - rabbitmq
-      - aggregator
 
 volumes:
   redis_data:

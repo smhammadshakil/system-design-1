@@ -53,6 +53,24 @@ EOF
 EOF
     done
 
+    # Add consumer services
+    for i in $(seq 1 4); do
+        cat >> "$temp_file" << EOF
+
+  consumer$i:
+    build: ./consumer
+    container_name: consumer$i
+    environment:
+      - PORT=808$i
+    networks:
+      - app-network
+    depends_on:
+      - redis
+      - rabbitmq
+      - aggregator
+EOF
+    done
+
     # Add remaining services
     cat >> "$temp_file" << EOF
 
@@ -74,18 +92,6 @@ EOF
       - "15672:15672"
     networks:
       - app-network
-
-  consumer:
-    build: ./consumer
-    container_name: consumer
-    environment:
-      - PORT=8080
-    networks:
-      - app-network
-    depends_on:
-      - redis
-      - rabbitmq
-      - aggregator
 
 volumes:
   redis_data:
