@@ -11,6 +11,8 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	"github.com/streadway/amqp"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
 )
 
 type Response struct {
@@ -24,6 +26,7 @@ type Consumer struct {
 	channel     *amqp.Channel
 	queue       amqp.Queue
 	done        chan bool
+	db          *gorm.DB
 }
 
 func NewConsumer() (*Consumer, error) {
@@ -33,11 +36,20 @@ func NewConsumer() (*Consumer, error) {
 		DB:       0,
 	})
 
+	// Connect to PostgreSQL
+	dsn := "host=postgres user=postgres password=postgres dbname=performance_db port=5432 sslmode=disable"
+	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to database: %v", err)
+	}
+
+	// Auto migrate the schema
+	if err := db.AutoMigrate(&Metric{}); err != nil {
+		return nil, fmt.Errorf("failed to migrate database: %v", err)
+	}
+
 	// Connect to RabbitMQ
 	var conn *amqp.Connection
-	var err error
-
-	// Retry connection with backoff
 	maxRetries := 30
 	retryInterval := 2 * time.Second
 
@@ -84,7 +96,15 @@ func NewConsumer() (*Consumer, error) {
 		channel:     ch,
 		queue:       q,
 		done:        make(chan bool),
+		db:          db,
 	}, nil
+}
+
+// Metric represents a performance metric in the database
+type Metric struct {
+	ID    uint   `gorm:"primaryKey"`
+	Key   string `gorm:"type:varchar(255);not null"`
+	Value int    `gorm:"not null"`
 }
 
 func (c *Consumer) Close() {
@@ -99,7 +119,7 @@ func (c *Consumer) Close() {
 	}
 }
 
-func (c *Consumer) storeInRedis(ctx context.Context, responses []Response) {
+func (c *Consumer) storeInRedisAndDB(ctx context.Context, responses []Response) {
 	timestamp := time.Now().Unix()
 	for _, resp := range responses {
 		key := fmt.Sprintf("%s:%d", resp.Endpoint, timestamp)
@@ -107,13 +127,26 @@ func (c *Consumer) storeInRedis(ctx context.Context, responses []Response) {
 		fmt.Printf("- - Dat key: %v\n", resp.Endpoint)
 		fmt.Printf("- - Dat val: %v\n", resp.Value)
 
-		fmt.Println("Sleeping for 15 seconds...")
-		time.Sleep(5 * time.Second)
+		// Store in Redis
 		if err := c.redisClient.Set(ctx, key, value, 24*time.Hour).Err(); err != nil {
 			fmt.Printf("Error storing in Redis: %v\n", err)
 		} else {
 			fmt.Printf("Stored in Redis - Key: %s, Value: %s\n", key, value)
 		}
+
+		// Store in PostgreSQL
+		metric := Metric{
+			Key:   resp.Endpoint,
+			Value: resp.Value,
+		}
+		if err := c.db.Create(&metric).Error; err != nil {
+			fmt.Printf("Error storing in PostgreSQL: %v\n", err)
+		} else {
+			fmt.Printf("Stored in PostgreSQL - Key: %s, Value: %d\n", resp.Endpoint, resp.Value)
+		}
+
+		fmt.Println("Sleeping for 5 seconds...")
+		time.Sleep(5 * time.Second)
 	}
 }
 
@@ -184,7 +217,7 @@ func (c *Consumer) Start() error {
 				}
 
 				fmt.Printf("Processing message with %d responses...\n", len(responses))
-				c.storeInRedis(context.Background(), responses)
+				c.storeInRedisAndDB(context.Background(), responses)
 				fmt.Println("Message processing completed, acknowledging...")
 				msg.Ack(false)
 
