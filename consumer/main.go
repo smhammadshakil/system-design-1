@@ -104,8 +104,8 @@ func (c *Consumer) storeInRedis(ctx context.Context, responses []Response) {
 	for _, resp := range responses {
 		key := fmt.Sprintf("%s:%d", resp.Endpoint, timestamp)
 		value := fmt.Sprintf("%d", resp.Value)
-		fmt.Printf("- - Data key: %v\n", resp.Endpoint)
-		fmt.Printf("- - Data val: %v\n", resp.Value)
+		fmt.Printf("- - Dat key: %v\n", resp.Endpoint)
+		fmt.Printf("- - Dat val: %v\n", resp.Value)
 
 		fmt.Println("Sleeping for 15 seconds...")
 		time.Sleep(5 * time.Second)
@@ -141,7 +141,7 @@ func (c *Consumer) Start() error {
 	msgs, err := c.channel.Consume(
 		c.queue.Name, // queue
 		"",           // consumer
-		false,        // auto-ack (changed to false for manual ack)
+		false,        // auto-ack
 		false,        // exclusive
 		false,        // no-local
 		false,        // no-wait
@@ -150,6 +150,8 @@ func (c *Consumer) Start() error {
 	if err != nil {
 		return fmt.Errorf("failed to register a consumer: %v", err)
 	}
+
+	fmt.Println("Successfully started consuming messages from queue:", c.queue.Name)
 
 	// Start connection monitoring
 	go c.monitorConnection()
@@ -173,17 +175,18 @@ func (c *Consumer) Start() error {
 					return
 				}
 
+				fmt.Println("Received new message from queue")
 				var responses []Response
 				if err := json.Unmarshal(msg.Body, &responses); err != nil {
 					fmt.Printf("Error unmarshaling message: %v\n", err)
-					msg.Ack(false) // Acknowledge the message even if it's invalid
+					msg.Ack(false)
 					continue
 				}
 
 				fmt.Printf("Processing message with %d responses...\n", len(responses))
 				c.storeInRedis(context.Background(), responses)
 				fmt.Println("Message processing completed, acknowledging...")
-				msg.Ack(false) // Manually acknowledge the message after processing
+				msg.Ack(false)
 
 			case <-c.done:
 				return
