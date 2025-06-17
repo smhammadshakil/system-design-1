@@ -74,7 +74,7 @@ func discoverNodes() []string {
 		if strings.HasPrefix(line, "Nmap scan report for") {
 			fields := strings.Fields(line)
 			if len(fields) >= 5 {
-				endpoints = append(endpoints, fmt.Sprintf("http://%s:8080/status", fields[4]))
+				endpoints = append(endpoints, fields[4])
 			}
 		}
 	}
@@ -88,9 +88,9 @@ func discoverNodes() []string {
 	return endpoints
 }
 
-func fetchEndpoint(url string, wg *sync.WaitGroup, results chan<- Response) {
+func fetchEndpoint(ip string, wg *sync.WaitGroup, results chan<- Response) {
 	defer wg.Done()
-
+	url := fmt.Sprintf("http://%s:8080/status", ip)
 	resp, err := http.Get(url)
 	if err != nil {
 		fmt.Printf("Error fetching %s: %v\n", url, err)
@@ -110,7 +110,7 @@ func fetchEndpoint(url string, wg *sync.WaitGroup, results chan<- Response) {
 		return
 	}
 
-	results <- Response{Endpoint: url, Value: num}
+	results <- Response{Endpoint: ip, Value: num}
 }
 
 func fetchAllEndpoints(endpoints []string) []Response {
@@ -235,7 +235,7 @@ func main() {
 	// Create a done channel to stop the ticker
 	done := make(chan bool)
 
-	ticker := time.NewTicker(5 * time.Second)
+	ticker := time.NewTicker(15 * time.Second)
 	go func() {
 		for {
 			select {

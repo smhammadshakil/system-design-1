@@ -48,7 +48,7 @@ update_service() {
 # Check if service name is provided
 if [ -z "$1" ]; then
     echo "Usage: ./update.sh <service-name>"
-    echo "Available services: consumer, aggregator, performance-status"
+    echo "Available services: consumer, aggregator, performance-status, monitoring"
     exit 1
 fi
 
@@ -63,8 +63,11 @@ case $1 in
     "performance-status")
         update_service "performance-status" "performance-status"
         ;;
+    "monitoring")
+        update_service "monitoring" "monitoring"
+        ;;
     *)
-        echo "Invalid service name. Available services: consumer, aggregator, performance-status"
+        echo "Invalid service name. Available services: consumer, aggregator, performance-status, monitoring"
         exit 1
         ;;
 esac 

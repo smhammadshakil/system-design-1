@@ -20,6 +20,13 @@ type Response struct {
 	Value    int    `json:"value"`
 }
 
+// Metric represents a performance metric in the database
+type Metric struct {
+	IP        string    `gorm:"type:varchar(255);primaryKey"`
+	Value     int       `gorm:"not null"`
+	Timestamp time.Time `gorm:"primaryKey;not null"`
+}
+
 type Consumer struct {
 	redisClient *redis.Client
 	rabbitConn  *amqp.Connection
@@ -100,13 +107,6 @@ func NewConsumer() (*Consumer, error) {
 	}, nil
 }
 
-// Metric represents a performance metric in the database
-type Metric struct {
-	ID    uint   `gorm:"primaryKey"`
-	Key   string `gorm:"type:varchar(255);not null"`
-	Value int    `gorm:"not null"`
-}
-
 func (c *Consumer) Close() {
 	if c.channel != nil {
 		c.channel.Close()
@@ -120,9 +120,9 @@ func (c *Consumer) Close() {
 }
 
 func (c *Consumer) storeInRedisAndDB(ctx context.Context, responses []Response) {
-	timestamp := time.Now().Unix()
+	timestamp := time.Now().UTC()
 	for _, resp := range responses {
-		key := fmt.Sprintf("%s:%d", resp.Endpoint, timestamp)
+		key := fmt.Sprintf("%s:%d", resp.Endpoint, timestamp.Unix())
 		value := fmt.Sprintf("%d", resp.Value)
 		fmt.Printf("- - Dat key: %v\n", resp.Endpoint)
 		fmt.Printf("- - Dat val: %v\n", resp.Value)
@@ -136,13 +136,14 @@ func (c *Consumer) storeInRedisAndDB(ctx context.Context, responses []Response) 
 
 		// Store in PostgreSQL
 		metric := Metric{
-			Key:   resp.Endpoint,
-			Value: resp.Value,
+			IP:        resp.Endpoint,
+			Value:     resp.Value,
+			Timestamp: timestamp,
 		}
 		if err := c.db.Create(&metric).Error; err != nil {
 			fmt.Printf("Error storing in PostgreSQL: %v\n", err)
 		} else {
-			fmt.Printf("Stored in PostgreSQL - Key: %s, Value: %d\n", resp.Endpoint, resp.Value)
+			fmt.Printf("Stored in PostgreSQL - IP: %s, Value: %d, Timestamp: %v\n", resp.Endpoint, resp.Value, timestamp)
 		}
 
 		fmt.Println("Sleeping for 5 seconds...")

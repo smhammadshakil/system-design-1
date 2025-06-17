@@ -25,8 +25,8 @@ kubectl delete service pgadmin
 kubectl delete service monitoring
 
 # Delete PVC
-echo "Deleting persistent volume claims..."
-kubectl delete pvc postgres-pvc
+# echo "Deleting persistent volume claims..."
+# kubectl delete pvc postgres-pvc
 
 # Wait for all pods to terminate
 echo "Waiting for pods to terminate..."

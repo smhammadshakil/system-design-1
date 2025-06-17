@@ -30,15 +30,15 @@ func NewServer(database *db.Database) *Server {
 func (s *Server) setupRoutes() {
 	s.router.GET("/report", s.handleReport)
 	s.router.GET("/metrics", s.handleGetMetrics)
-	s.router.GET("/metrics/:key", s.handleGetMetricByKey)
+	s.router.GET("/metrics/:ip", s.handleGetMetricByIp)
 }
 
 // handleReport generates a random metric and stores it
 func (s *Server) handleReport(c *gin.Context) {
 	value := rand.Intn(100)
-	key := "random_metric"
+	ip := "10.0.0.1"
 
-	err := s.db.CreateMetric(key, value)
+	err := s.db.CreateMetric(ip, value)
 	if err != nil {
 		c.JSON(500, gin.H{"error": "Failed to store metric"})
 		return
@@ -58,10 +58,10 @@ func (s *Server) handleGetMetrics(c *gin.Context) {
 	c.JSON(200, metrics)
 }
 
-// handleGetMetricByKey returns a specific metric by key
-func (s *Server) handleGetMetricByKey(c *gin.Context) {
-	key := c.Param("key")
-	metric, err := s.db.GetMetricByKey(key)
+// handleGetMetricByIp returns a specific metric by ip
+func (s *Server) handleGetMetricByIp(c *gin.Context) {
+	ip := c.Param("ip")
+	metric, err := s.db.GetMetricByIP(ip)
 	if err != nil {
 		c.JSON(404, gin.H{"error": "Metric not found"})
 		return
